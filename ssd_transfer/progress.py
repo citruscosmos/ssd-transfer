@@ -175,15 +175,15 @@ class ProgressDisplay:
         )
         self._console.print(f"  Destination: {prev_dest}\n")
         self._console.print("  What would you like to do?")
-        self._console.print("  [s] Skip (do nothing)")
-        self._console.print("  [c] Copy to a new folder (no overwrite)")
-        self._console.print("  [r] Overwrite copy (re-copy all files)")
-        self._console.print(f"  Auto-selecting [s] in {timeout}s if no input.")
+        self._console.print(r"  \[s] Skip (do nothing)")
+        self._console.print(r"  \[c] Copy to a new folder (no overwrite)")
+        self._console.print(r"  \[r] Overwrite copy (re-copy all files)")
+        self._console.print(f"  Auto-selecting \\[s] in {timeout}s if no input.")
 
         choice = _timed_input("  Choice [s/c/r]: ", timeout=timeout, default="s")
         valid = {"s", "c", "r"}
         if choice.strip().lower() not in valid:
-            self._console.print("  → Auto-selected: [s] skip")
+            self._console.print(r"  → Auto-selected: \[s] skip")
             choice = "s"
         else:
             choice = choice.strip().lower()
