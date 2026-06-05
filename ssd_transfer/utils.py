@@ -63,20 +63,26 @@ def is_external_device(devname: str) -> bool:
     """Return True if the block device is an external/removable drive.
 
     devname is the base device name (e.g. 'sdb', not 'sdb1').
-    Checks /sys/block/<dev>/removable and skips system mount points.
+
+    USB-to-SATA adapters report ID_BUS=ata, so bus-name checks alone are
+    insufficient. The most reliable signal is the /sys/block symlink target,
+    which traverses the full device tree and contains 'usb' for any USB-
+    attached device regardless of the intermediate protocol.
     """
-    removable_path = Path(f"/sys/block/{devname}/removable")
+    # /sys/block/<dev> is a symlink into /sys/devices/...; 'usb' appears in
+    # the path for USB-attached devices including USB-SATA adapters.
+    sys_block = Path(f"/sys/block/{devname}")
     try:
-        if removable_path.read_text().strip() == "1":
+        target = str(sys_block.resolve())
+        if "usb" in target or "ieee1394" in target:
             return True
     except OSError:
         pass
 
-    # Check USB or IEEE1394 bus via /sys/block/<dev>/device/
-    uevent_path = Path(f"/sys/block/{devname}/device/uevent")
+    # Fallback: removable flag (set to 1 for many USB sticks/drives)
+    removable_path = Path(f"/sys/block/{devname}/removable")
     try:
-        uevent = uevent_path.read_text()
-        if "usb" in uevent.lower() or "ieee1394" in uevent.lower():
+        if removable_path.read_text().strip() == "1":
             return True
     except OSError:
         pass
