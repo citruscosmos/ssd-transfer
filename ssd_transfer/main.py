@@ -15,7 +15,7 @@ from typing import Optional
 
 from .monitor import DeviceMonitor
 from .progress import ProgressDisplay
-from .transfer import TransferJob, read_complete_marker
+from .transfer import TransferJob, read_complete_marker, read_started_marker
 from .utils import format_bytes
 
 logger = logging.getLogger(__name__)
@@ -241,12 +241,26 @@ class App:
         return self._dest / ts / display_name
 
     def _find_previous_transfer(self, uuid: str) -> Optional[Path]:
-        """Scan dest for .transfer_complete markers matching UUID; return most recent."""
+        """Scan dest for transfer markers matching UUID; return most recent folder."""
         candidates = []
+        seen: set[Path] = set()
+
         for marker_file in self._dest.rglob(".transfer_complete"):
-            data = read_complete_marker(marker_file.parent)
+            parent = marker_file.parent
+            data = read_complete_marker(parent)
             if data and data.get("uuid") == uuid:
-                candidates.append((data.get("completed_at", ""), marker_file.parent))
+                candidates.append((data.get("completed_at", ""), parent))
+                seen.add(parent)
+
+        # Also find incomplete (started but not completed) transfers
+        for marker_file in self._dest.rglob(".transfer_started"):
+            parent = marker_file.parent
+            if parent in seen:
+                continue
+            data = read_started_marker(parent)
+            if data and data.get("uuid") == uuid:
+                candidates.append((data.get("started_at", ""), parent))
+
         if not candidates:
             return None
         candidates.sort(key=lambda x: x[0], reverse=True)

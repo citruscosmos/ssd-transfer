@@ -68,6 +68,7 @@ class TransferJob:
         copied_bytes = 0
 
         try:
+            self._write_started_marker()
             self._cleanup_tmp_files()
 
             files = list(self._scan_files())
@@ -258,6 +259,15 @@ class TransferJob:
                 tmp.unlink(missing_ok=True)
                 logger.debug(f"removed tmp file: {tmp}")
 
+    def _write_started_marker(self):
+        marker_path = self.dest / ".transfer_started"
+        data = {
+            "uuid": self.uuid,
+            "label": self.label,
+            "started_at": datetime.now(timezone.utc).astimezone().isoformat(),
+        }
+        marker_path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
     def _write_complete_marker(self, total_files: int, total_bytes: int, skipped: int, failed: int):
         marker_path = self.dest / ".transfer_complete"
         tmp_marker = self.dest / ".transfer_complete.tmp"
@@ -277,6 +287,17 @@ class TransferJob:
 def read_complete_marker(path: Path) -> Optional[dict]:
     """Return parsed .transfer_complete JSON, or None if absent/invalid."""
     marker = path / ".transfer_complete"
+    if not marker.exists():
+        return None
+    try:
+        return json.loads(marker.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def read_started_marker(path: Path) -> Optional[dict]:
+    """Return parsed .transfer_started JSON, or None if absent/invalid."""
+    marker = path / ".transfer_started"
     if not marker.exists():
         return None
     try:
