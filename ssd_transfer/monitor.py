@@ -98,6 +98,10 @@ class DeviceMonitor:
             logger.debug(f"{mount_point} はシステムマウントポイントのためスキップ")
             return
 
+        if self._is_dest_device(mount_point):
+            logger.info(f"{devpath} は転送先デバイスのためスキップ ({mount_point})")
+            return
+
         # Prefer udev properties (already resolved by udevd, no blkid subprocess needed)
         uuid = props.get("ID_FS_UUID") or get_device_uuid(devpath)
         label = props.get("ID_FS_LABEL") or get_device_label(devpath)
@@ -147,6 +151,16 @@ class DeviceMonitor:
 
         return False
 
+    def _is_dest_device(self, mount_point: Path) -> bool:
+        """Return True if --dest lives on this device (i.e. mount_point is a
+        parent of dest). Prevents the destination SSD from being treated as a
+        copy source when both source and destination are external drives."""
+        try:
+            self._dest.resolve().relative_to(mount_point.resolve())
+            return True
+        except ValueError:
+            return False
+
     def _scan_existing_devices(self):
         """Scan already-mounted external block devices at startup."""
         logger.info("起動時スキャン: マウント済みデバイスを確認中...")
@@ -167,6 +181,10 @@ class DeviceMonitor:
 
                 mount_point = mounted[devpath]
                 if is_system_mount_point(str(mount_point)):
+                    continue
+
+                if self._is_dest_device(mount_point):
+                    logger.info(f"{devpath} は転送先デバイスのためスキップ ({mount_point})")
                     continue
 
                 uuid = props.get("ID_FS_UUID") or get_device_uuid(devpath, retries=1)
