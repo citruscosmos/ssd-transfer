@@ -18,6 +18,7 @@ Plug in an SSD and the files copy themselves. Disconnect mid-transfer, reconnect
 
 - USB-native SSDs (e.g. SanDisk Extreme Pro)
 - USB-to-SATA adapter SSDs (e.g. ORICO)
+- IEEE 1394 (FireWire) drives
 - Devices with or without a partition table
 
 ## Requirements
@@ -83,7 +84,7 @@ A timestamped subfolder is created per connection:
 ```
 /mnt/backup/
 ├── 20260605_143022/        # connection timestamp
-│   └── PHOTOS_SSD/         # SSD label (or first 8 chars of UUID if no label)
+│   └── PHOTOS_SSD/         # SSD label → dev_<uuid8> → device name (fallback order)
 │       ├── DCIM/
 │       └── Documents/
 └── 20260605_150011/
@@ -91,9 +92,13 @@ A timestamped subfolder is created per connection:
         └── ...
 ```
 
-A `.transfer_complete` JSON file is written on successful completion and used to detect duplicate connections.
+`.transfer_started` is written at the start of each transfer and `.transfer_complete` on successful completion. Both are used to detect duplicate and interrupted transfers.
 
 ## Behaviour details
+
+### Startup scan
+
+When the daemon starts it immediately scans for already-mounted external drives and begins transferring any it finds, so you don't need to unplug and replug an SSD that was connected before launching.
 
 ### Resume on reconnect
 
@@ -101,9 +106,11 @@ A `.transfer_complete` JSON file is written on successful completion and used to
 |---|---|
 | File not in destination | Copy |
 | File exists, sizes match | Skip (already transferred) |
-| File exists, sizes differ | Overwrite (partial file) |
+| File exists, sizes differ | Overwrite (partial/changed file) |
 
 ### Duplicate SSD prompt
+
+Triggered when the same UUID is detected again — whether the previous transfer completed or was interrupted mid-way.
 
 ```
 [ssd-transfer] SSD "PHOTOS_SSD" (UUID: a1b2c3d4-...) was previously transferred.
@@ -112,11 +119,12 @@ A `.transfer_complete` JSON file is written on successful completion and used to
   What would you like to do?
   [s] Skip (do nothing)
   [c] Copy to a new folder (no overwrite)
-  [r] Overwrite copy (re-copy all files)
-  Choice [s/c/r]:
+  [r] Resume existing folder (skip same name+size, copy new/changed)
+  [o] Overwrite copy (re-copy all files)
+  Choice [s/c/r/o]:
 ```
 
-Automatically selects `[s]` skip after 30 seconds with no input.
+Automatically selects `[c]` copy to new folder after 3 minutes with no input.
 
 ### Ctrl+C shutdown
 
