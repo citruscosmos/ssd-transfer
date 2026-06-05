@@ -120,12 +120,12 @@ def format_bytes(n: int) -> str:
 
 
 def format_duration(seconds: float) -> str:
-    """Return human-readable duration (e.g. '10分 32秒')."""
+    """Return human-readable duration (e.g. '10m 32s')."""
     seconds = int(seconds)
     minutes, secs = divmod(seconds, 60)
     hours, minutes = divmod(minutes, 60)
     if hours:
-        return f"{hours}時間 {minutes}分 {secs}秒"
+        return f"{hours}h {minutes}m {secs}s"
     if minutes:
-        return f"{minutes}分 {secs}秒"
-    return f"{secs}秒"
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"

@@ -97,7 +97,7 @@ class ProgressDisplay:
                 total=total_bytes,
                 transferred="0 B",
                 total_size=format_bytes(total_bytes),
-                speed="-- MB/s",
+                speed="-- B/s",
             )
             self._task_ids[job_id] = task_id
             self._speed_tracker.register(task_id)
@@ -146,21 +146,21 @@ class ProgressDisplay:
 
         sep = "━" * 55
         self._console.print(f"\n{sep}")
-        self._console.print(f'[bold green][完了] SSD "{label}" → {dest}[/bold green]')
-        self._console.print(f"  転送ファイル数:   {total_files:,} ファイル")
-        self._console.print(f"  スキップ数:       {skipped:,} ファイル（転送済み）")
-        self._console.print(f"  失敗数:           {failed:,} ファイル")
-        self._console.print(f"  転送サイズ:       {format_bytes(total_bytes)}")
-        self._console.print(f"  所要時間:         {format_duration(elapsed)}")
-        self._console.print(f"  平均速度:         {format_bytes(int(speed))}/s")
+        self._console.print(f'[bold green][done] SSD "{label}" → {dest}[/bold green]')
+        self._console.print(f"  Transferred:  {total_files:,} files")
+        self._console.print(f"  Skipped:      {skipped:,} files (already transferred)")
+        self._console.print(f"  Failed:       {failed:,} files")
+        self._console.print(f"  Total size:   {format_bytes(total_bytes)}")
+        self._console.print(f"  Duration:     {format_duration(elapsed)}")
+        self._console.print(f"  Avg speed:    {format_bytes(int(speed))}/s")
         self._console.print(sep)
 
     def error(self, job_id: str, message: str):
         with self._lock:
             task_id = self._task_ids.get(job_id)
             if task_id is not None:
-                self._progress.update(task_id, description=f"[red]エラー: {message[:40]}[/red]")
-        self._console.print(f"[bold red][エラー] {message}[/bold red]")
+                self._progress.update(task_id, description=f"[red]error: {message[:40]}[/red]")
+        self._console.print(f"[bold red][error] {message}[/bold red]")
 
     def prompt_duplicate(self, label: str, uuid: str, prev_dest: Path, timeout: int = 30) -> str:
         """Show duplicate SSD prompt. Returns 's', 'c', or 'r'. Stops/restarts Live."""
@@ -171,19 +171,19 @@ class ProgressDisplay:
                 self._started = False
 
         self._console.print(
-            f'\n[bold yellow][ssd-transfer] SSD "{label}" (UUID: {uuid}) は過去に転送済みです。[/bold yellow]'
+            f'\n[bold yellow][ssd-transfer] SSD "{label}" (UUID: {uuid}) was previously transferred.[/bold yellow]'
         )
-        self._console.print(f"  転送先: {prev_dest}\n")
-        self._console.print("  どうしますか？")
-        self._console.print("  [s] スキップ（何もしない）")
-        self._console.print("  [c] 新規フォルダにコピー（上書きなし）")
-        self._console.print("  [r] 上書きコピー（既存ファイルも再コピー）")
-        self._console.print(f"  ※ {timeout}秒以内に選択がなければ自動的に [s] を選択します")
+        self._console.print(f"  Destination: {prev_dest}\n")
+        self._console.print("  What would you like to do?")
+        self._console.print("  [s] Skip (do nothing)")
+        self._console.print("  [c] Copy to a new folder (no overwrite)")
+        self._console.print("  [r] Overwrite copy (re-copy all files)")
+        self._console.print(f"  Auto-selecting [s] in {timeout}s if no input.")
 
-        choice = _timed_input(f"  選択 [s/c/r]: ", timeout=timeout, default="s")
+        choice = _timed_input("  Choice [s/c/r]: ", timeout=timeout, default="s")
         valid = {"s", "c", "r"}
         if choice.strip().lower() not in valid:
-            self._console.print(f"  → 自動選択: [s] スキップ")
+            self._console.print("  → Auto-selected: [s] skip")
             choice = "s"
         else:
             choice = choice.strip().lower()

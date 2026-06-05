@@ -51,7 +51,7 @@ class DeviceMonitor:
         """Start udev monitor and scan already-mounted devices."""
         self._observer = pyudev.MonitorObserver(self._monitor, callback=self._handle_event)
         self._observer.start()
-        logger.info("udevモニター開始")
+        logger.info("udev monitor started")
         self._scan_existing_devices()
 
     def stop(self):
@@ -59,7 +59,7 @@ class DeviceMonitor:
         self._stopped.set()
         if self._observer:
             self._observer.stop()
-        logger.info("udevモニター停止")
+        logger.info("udev monitor stopped")
 
     def _handle_event(self, device: pyudev.Device):
         if self._stopped.is_set():
@@ -78,11 +78,11 @@ class DeviceMonitor:
 
         # Must carry filesystem metadata to be a data device
         if not props.get("ID_FS_UUID") and not props.get("ID_FS_LABEL"):
-            logger.debug(f"{device.device_node}: ファイルシステム情報なし、スキップ")
+            logger.debug(f"{device.device_node}: no filesystem info, skipping")
             return
 
         if not self._is_external_udev_device(device):
-            logger.debug(f"{device.device_node}: 外付けデバイスではないためスキップ")
+            logger.debug(f"{device.device_node}: not an external device, skipping")
             return
 
         devpath = device.device_node
@@ -91,15 +91,15 @@ class DeviceMonitor:
 
         mount_point = get_mount_point(devpath)
         if mount_point is None:
-            logger.warning(f"{devpath} のマウントポイント取得がタイムアウトしました。スキップします。")
+            logger.warning(f"{devpath}: timed out waiting for mount point, skipping")
             return
 
         if is_system_mount_point(str(mount_point)):
-            logger.debug(f"{mount_point} はシステムマウントポイントのためスキップ")
+            logger.debug(f"{mount_point}: system mount point, skipping")
             return
 
         if self._is_dest_device(mount_point):
-            logger.info(f"{devpath} は転送先デバイスのためスキップ ({mount_point})")
+            logger.info(f"{devpath}: destination device, skipping ({mount_point})")
             return
 
         # Prefer udev properties (already resolved by udevd, no blkid subprocess needed)
@@ -108,7 +108,7 @@ class DeviceMonitor:
         devname = Path(devpath).name
         display_name = label if label else (f"dev_{uuid[:8]}" if uuid else devname)
 
-        logger.info(f"外付けデバイス検出: {display_name} ({devpath}) → {mount_point}")
+        logger.info(f"external device detected: {display_name} ({devpath}) → {mount_point}")
         self._on_device_added(
             devpath=devpath,
             mount_point=mount_point,
@@ -121,7 +121,7 @@ class DeviceMonitor:
         devpath = device.device_node
         if not devpath:
             return
-        logger.info(f"デバイス切断検出: {devpath}")
+        logger.info(f"device removed: {devpath}")
         self._on_device_removed(devpath=devpath)
 
     def _is_external_udev_device(self, device: pyudev.Device) -> bool:
@@ -163,7 +163,7 @@ class DeviceMonitor:
 
     def _scan_existing_devices(self):
         """Scan already-mounted external block devices at startup."""
-        logger.info("起動時スキャン: マウント済みデバイスを確認中...")
+        logger.info("startup scan: checking already-mounted devices...")
         mounted = {p.device: Path(p.mountpoint) for p in psutil.disk_partitions(all=True)}
 
         for devtype in _ACCEPTED_DEVTYPES:
@@ -184,7 +184,7 @@ class DeviceMonitor:
                     continue
 
                 if self._is_dest_device(mount_point):
-                    logger.info(f"{devpath} は転送先デバイスのためスキップ ({mount_point})")
+                    logger.info(f"{devpath}: destination device, skipping ({mount_point})")
                     continue
 
                 uuid = props.get("ID_FS_UUID") or get_device_uuid(devpath, retries=1)
@@ -192,7 +192,7 @@ class DeviceMonitor:
                 devname = Path(devpath).name
                 display_name = label if label else (f"dev_{uuid[:8]}" if uuid else devname)
 
-                logger.info(f"起動時スキャン: 既存デバイス {display_name} ({devpath}) → {mount_point}")
+                logger.info(f"startup scan: found {display_name} ({devpath}) → {mount_point}")
                 self._on_device_added(
                     devpath=devpath,
                     mount_point=mount_point,

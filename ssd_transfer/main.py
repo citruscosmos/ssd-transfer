@@ -39,33 +39,33 @@ def _setup_logging():
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="ssd-transfer",
-        description="外付けSSDを自動検出してファイルをコピーするCLIデーモン",
+        description="CLI daemon that auto-detects external SSDs and copies files to a destination folder",
     )
-    parser.add_argument("--dest", required=True, type=Path, metavar="DIR", help="転送先フォルダ")
+    parser.add_argument("--dest", required=True, type=Path, metavar="DIR", help="destination folder")
     parser.add_argument(
         "--mode",
         choices=["sequential", "parallel"],
         default="sequential",
-        help="複数SSD処理モード (default: sequential)",
+        help="multi-SSD processing mode (default: sequential)",
     )
     parser.add_argument(
         "--filter-ext",
         nargs="+",
         metavar="EXT",
-        help="コピー対象拡張子 (例: .jpg .mp4)",
+        help="copy only these extensions (e.g. --filter-ext .jpg .mp4)",
     )
     parser.add_argument(
         "--filter-dir",
         nargs="+",
         metavar="DIR",
-        help="コピー対象ディレクトリ名 (例: DCIM Pictures)",
+        help="copy only from these directories (e.g. --filter-dir DCIM Pictures)",
     )
     parser.add_argument(
         "--max-concurrent",
         type=int,
         default=2,
         metavar="N",
-        help="parallel モードの最大同時転送数 (default: 2)",
+        help="max simultaneous transfers in parallel mode (default: 2)",
     )
     return parser.parse_args()
 
@@ -116,7 +116,7 @@ class App:
         signal.signal(signal.SIGTERM, self._handle_sigint)
 
         self._progress.print(
-            f"[bold green][ssd-transfer] 起動完了。SSD接続を待機中... (転送先: {self._dest})[/bold green]"
+            f"[bold green][ssd-transfer] Ready. Waiting for SSD... (dest: {self._dest})[/bold green]"
         )
         self._monitor.start()
 
@@ -125,10 +125,10 @@ class App:
 
     def _validate_dest(self):
         if not self._dest.exists():
-            print(f"[エラー] 転送先フォルダが存在しません: {self._dest}", file=sys.stderr)
+            print(f"[error] Destination folder does not exist: {self._dest}", file=sys.stderr)
             sys.exit(1)
         if not os.access(self._dest, os.W_OK):
-            print(f"[エラー] 転送先フォルダへの書き込み権限がありません: {self._dest}", file=sys.stderr)
+            print(f"[error] No write permission for destination: {self._dest}", file=sys.stderr)
             sys.exit(1)
 
     def _on_device_added(
@@ -150,7 +150,7 @@ class App:
                 label=display_name, uuid=uuid, prev_dest=existing_dest
             )
             if choice == "s":
-                self._progress.print(f"[ssd-transfer] スキップしました: {display_name}")
+                self._progress.print(f"[ssd-transfer] Skipped: {display_name}")
                 return
             elif choice == "r":
                 dest_folder = existing_dest
@@ -183,7 +183,7 @@ class App:
             self._active_jobs[devpath] = job
 
         self._progress.print(
-            f"[bold cyan][ssd-transfer] SSD検出: {display_name} ({devpath}) → {dest_folder}[/bold cyan]"
+            f"[bold cyan][ssd-transfer] Detected: {display_name} ({devpath}) → {dest_folder}[/bold cyan]"
         )
 
         if self._mode == "sequential":
@@ -198,10 +198,9 @@ class App:
             job = self._active_jobs.get(devpath)
         if job:
             job.cancel()
-            pct = ""
             self._progress.print(
-                f"[bold yellow][警告] SSD \"{job.display_name}\" が切断されました。転送を中断します。\n"
-                f"  再接続を待機中...[/bold yellow]"
+                f'[bold yellow][ssd-transfer] SSD "{job.display_name}" disconnected. Transfer cancelled.\n'
+                f"  Waiting for reconnect...[/bold yellow]"
             )
 
     def _on_progress(self, job_id: str, copied_bytes: int, current_file: str, total_bytes: int, phase: str):
@@ -247,7 +246,7 @@ class App:
         return None
 
     def _handle_sigint(self, signum, frame):
-        self._progress.print("\n[bold red][ssd-transfer] シャットダウン中...[/bold red]")
+        self._progress.print("\n[bold red][ssd-transfer] Shutting down...[/bold red]")
         if self._monitor:
             self._monitor.stop()
         with self._jobs_lock:

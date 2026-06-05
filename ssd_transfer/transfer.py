@@ -72,7 +72,7 @@ class TransferJob:
 
             files = list(self._scan_files())
             if not files:
-                logger.info(f"{self.job_id}: コピー対象ファイルなし")
+                logger.info(f"{self.job_id}: no files to copy")
                 self._write_complete_marker(0, 0, skipped, failed)
                 return
 
@@ -92,7 +92,7 @@ class TransferJob:
 
             for src_file in files:
                 if self.cancelled.is_set():
-                    logger.info(f"{self.job_id}: キャンセルされました")
+                    logger.info(f"{self.job_id}: cancelled")
                     break
 
                 rel = src_file.relative_to(self.src)
@@ -128,7 +128,7 @@ class TransferJob:
                     bytes_since_last_check += file_copied
                     total_files += 1
                 except OSError as exc:
-                    logger.warning(f"コピー失敗 {src_file}: {exc}")
+                    logger.warning(f"copy failed {src_file}: {exc}")
                     failed += 1
 
                 # Mid-copy disk space check every 500 MB
@@ -137,7 +137,7 @@ class TransferJob:
                     free = shutil.disk_usage(self.dest).free
                     if free < remaining * DISK_WARN_RATIO:
                         logger.warning(
-                            f"転送先の空き容量が残り転送予定の{DISK_WARN_RATIO*100:.0f}%未満です。"
+                            f"destination free space is below {DISK_WARN_RATIO*100:.0f}% of remaining transfer"
                         )
                     bytes_since_last_check = 0
 
@@ -149,10 +149,10 @@ class TransferJob:
             return
         except IOError as exc:
             # Likely disconnection
-            logger.warning(f"IOError (切断?) {exc}")
+            logger.warning(f"IOError (disconnected?): {exc}")
             self._cleanup_tmp_files()
             if self.on_error:
-                self.on_error(job_id=self.job_id, message=f"転送エラー: {exc}")
+                self.on_error(job_id=self.job_id, message=f"transfer error: {exc}")
             return
 
         if not self.cancelled.is_set():
@@ -207,7 +207,7 @@ class TransferJob:
             try:
                 shutil.copystat(src_file, tmp_file)
             except OSError as exc:
-                logger.warning(f"タイムスタンプ保持失敗 {dest_file}: {exc}")
+                logger.warning(f"failed to preserve timestamps for {dest_file}: {exc}")
 
             os.rename(tmp_file, dest_file)
         except (TransferCancelledError, BaseException):
@@ -246,17 +246,17 @@ class TransferJob:
         if free < required_bytes:
             from .utils import format_bytes
             raise DiskSpaceError(
-                f"転送先の空き容量が不足しています。\n"
-                f"  必要容量: {format_bytes(required_bytes)}\n"
-                f"  空き容量: {format_bytes(free)}\n"
-                f"  不足分:   {format_bytes(required_bytes - free)}"
+                f"insufficient space at destination\n"
+                f"  required: {format_bytes(required_bytes)}\n"
+                f"  free:     {format_bytes(free)}\n"
+                f"  shortage: {format_bytes(required_bytes - free)}"
             )
 
     def _cleanup_tmp_files(self):
         if self.dest.exists():
             for tmp in self.dest.rglob("*.tmp"):
                 tmp.unlink(missing_ok=True)
-                logger.debug(f"一時ファイル削除: {tmp}")
+                logger.debug(f"removed tmp file: {tmp}")
 
     def _write_complete_marker(self, total_files: int, total_bytes: int, skipped: int, failed: int):
         marker_path = self.dest / ".transfer_complete"
