@@ -152,9 +152,12 @@ class App:
             if choice == "s":
                 self._progress.print(f"[ssd-transfer] Skipped: {display_name}")
                 return
-            elif choice == "r":
+            elif choice == "o":
                 dest_folder = existing_dest
                 force_overwrite = True
+            elif choice == "r":
+                dest_folder = existing_dest
+                force_overwrite = False
             else:  # 'c'
                 dest_folder = self._make_dest_folder(display_name)
                 force_overwrite = False
@@ -238,12 +241,16 @@ class App:
         return self._dest / ts / display_name
 
     def _find_previous_transfer(self, uuid: str) -> Optional[Path]:
-        """Scan dest for a .transfer_complete marker matching the UUID."""
-        for marker_dir in self._dest.rglob(".transfer_complete"):
-            data = read_complete_marker(marker_dir.parent)
+        """Scan dest for .transfer_complete markers matching UUID; return most recent."""
+        candidates = []
+        for marker_file in self._dest.rglob(".transfer_complete"):
+            data = read_complete_marker(marker_file.parent)
             if data and data.get("uuid") == uuid:
-                return marker_dir.parent
-        return None
+                candidates.append((data.get("completed_at", ""), marker_file.parent))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
 
     def _handle_sigint(self, signum, frame):
         self._progress.print("\n[bold red][ssd-transfer] Shutting down...[/bold red]")

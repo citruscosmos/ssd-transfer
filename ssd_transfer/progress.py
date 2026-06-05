@@ -163,7 +163,7 @@ class ProgressDisplay:
         self._console.print(f"[bold red][error] {message}[/bold red]")
 
     def prompt_duplicate(self, label: str, uuid: str, prev_dest: Path, timeout: int = 180) -> str:
-        """Show duplicate SSD prompt. Returns 's', 'c', or 'r'. Stops/restarts Live."""
+        """Show duplicate SSD prompt. Returns 's', 'c', 'r', or 'o'. Stops/restarts Live."""
         with self._lock:
             was_started = self._started
             if was_started:
@@ -177,11 +177,12 @@ class ProgressDisplay:
         self._console.print("  What would you like to do?")
         self._console.print(r"  \[s] Skip (do nothing)")
         self._console.print(r"  \[c] Copy to a new folder (no overwrite)")
-        self._console.print(r"  \[r] Overwrite copy (re-copy all files)")
+        self._console.print(r"  \[r] Resume existing folder (skip same name+size, copy new/changed)")
+        self._console.print(r"  \[o] Overwrite copy (re-copy all files)")
         self._console.print(f"  Auto-selecting \\[c] in {timeout}s if no input.")
 
-        choice = _timed_input("  Choice [s/c/r]: ", timeout=timeout, default="c")
-        valid = {"s", "c", "r"}
+        choice = _timed_input("  Choice [s/c/r/o]: ", timeout=timeout, default="c")
+        valid = {"s", "c", "r", "o"}
         if choice.strip().lower() not in valid:
             self._console.print(r"  → Auto-selected: \[c] copy to new folder")
             choice = "c"
