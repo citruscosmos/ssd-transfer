@@ -1,0 +1,270 @@
+"""Entry point: CLI parsing, startup validation, glue."""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import queue
+import signal
+import sys
+import threading
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from .monitor import DeviceMonitor
+from .progress import ProgressDisplay
+from .transfer import TransferJob, read_complete_marker
+from .utils import format_bytes
+
+logger = logging.getLogger(__name__)
+
+
+def _setup_logging():
+    log_dir = Path.home() / ".local" / "share" / "ssd-transfer"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[
+            logging.FileHandler(log_dir / "transfers.log"),
+            logging.StreamHandler(sys.stderr),
+        ],
+    )
+    # Suppress noisy pyudev debug output
+    logging.getLogger("pyudev").setLevel(logging.WARNING)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="ssd-transfer",
+        description="外付けSSDを自動検出してファイルをコピーするCLIデーモン",
+    )
+    parser.add_argument("--dest", required=True, type=Path, metavar="DIR", help="転送先フォルダ")
+    parser.add_argument(
+        "--mode",
+        choices=["sequential", "parallel"],
+        default="sequential",
+        help="複数SSD処理モード (default: sequential)",
+    )
+    parser.add_argument(
+        "--filter-ext",
+        nargs="+",
+        metavar="EXT",
+        help="コピー対象拡張子 (例: .jpg .mp4)",
+    )
+    parser.add_argument(
+        "--filter-dir",
+        nargs="+",
+        metavar="DIR",
+        help="コピー対象ディレクトリ名 (例: DCIM Pictures)",
+    )
+    parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=2,
+        metavar="N",
+        help="parallel モードの最大同時転送数 (default: 2)",
+    )
+    return parser.parse_args()
+
+
+class App:
+    def __init__(self, args: argparse.Namespace):
+        self._dest = args.dest
+        self._mode = args.mode
+        self._max_concurrent = args.max_concurrent
+        self._filters = {
+            "ext": {e.lower() for e in args.filter_ext} if args.filter_ext else None,
+            "dir": set(args.filter_dir) if args.filter_dir else None,
+        }
+
+        self._progress = ProgressDisplay(self._mode)
+        self._active_jobs: dict[str, TransferJob] = {}
+        self._jobs_lock = threading.Lock()
+
+        # Sequential mode: queue + single worker thread
+        self._job_queue: queue.Queue = queue.Queue()
+        self._worker_thread: Optional[threading.Thread] = None
+
+        # Parallel mode: semaphore limits concurrency
+        self._parallel_sem = threading.Semaphore(self._max_concurrent)
+
+        self._monitor: Optional[DeviceMonitor] = None
+        self._shutdown = threading.Event()
+
+    def run(self):
+        self._validate_dest()
+        self._progress.start()
+
+        self._monitor = DeviceMonitor(
+            dest=self._dest,
+            mode=self._mode,
+            filters=self._filters,
+            on_device_added=self._on_device_added,
+            on_device_removed=self._on_device_removed,
+        )
+
+        if self._mode == "sequential":
+            self._worker_thread = threading.Thread(
+                target=self._sequential_worker, daemon=True, name="sequential-worker"
+            )
+            self._worker_thread.start()
+
+        signal.signal(signal.SIGINT, self._handle_sigint)
+        signal.signal(signal.SIGTERM, self._handle_sigint)
+
+        self._progress.print(
+            f"[bold green][ssd-transfer] 起動完了。SSD接続を待機中... (転送先: {self._dest})[/bold green]"
+        )
+        self._monitor.start()
+
+        # Block main thread until shutdown
+        self._shutdown.wait()
+
+    def _validate_dest(self):
+        if not self._dest.exists():
+            print(f"[エラー] 転送先フォルダが存在しません: {self._dest}", file=sys.stderr)
+            sys.exit(1)
+        if not os.access(self._dest, os.W_OK):
+            print(f"[エラー] 転送先フォルダへの書き込み権限がありません: {self._dest}", file=sys.stderr)
+            sys.exit(1)
+
+    def _on_device_added(
+        self,
+        devpath: str,
+        mount_point: Path,
+        uuid: str,
+        label: str,
+        display_name: str,
+    ):
+        if self._shutdown.is_set():
+            return
+
+        # Check for previous transfer of same UUID
+        existing_dest = self._find_previous_transfer(uuid) if uuid else None
+
+        if existing_dest:
+            choice = self._progress.prompt_duplicate(
+                label=display_name, uuid=uuid, prev_dest=existing_dest
+            )
+            if choice == "s":
+                self._progress.print(f"[ssd-transfer] スキップしました: {display_name}")
+                return
+            elif choice == "r":
+                dest_folder = existing_dest
+                force_overwrite = True
+            else:  # 'c'
+                dest_folder = self._make_dest_folder(display_name)
+                force_overwrite = False
+        else:
+            dest_folder = self._make_dest_folder(display_name)
+            force_overwrite = False
+
+        dest_folder.mkdir(parents=True, exist_ok=True)
+
+        job_id = f"{devpath}_{datetime.now().strftime('%H%M%S')}"
+        job = TransferJob(
+            src=mount_point,
+            dest=dest_folder,
+            filters=self._filters,
+            uuid=uuid,
+            label=label,
+            display_name=display_name,
+            job_id=job_id,
+            on_progress=self._on_progress,
+            on_complete=self._on_complete,
+            on_error=self._on_error,
+            force_overwrite=force_overwrite,
+        )
+
+        with self._jobs_lock:
+            self._active_jobs[devpath] = job
+
+        self._progress.print(
+            f"[bold cyan][ssd-transfer] SSD検出: {display_name} ({devpath}) → {dest_folder}[/bold cyan]"
+        )
+
+        if self._mode == "sequential":
+            self._job_queue.put(job)
+        else:
+            threading.Thread(
+                target=self._run_parallel_job, args=(job,), daemon=True
+            ).start()
+
+    def _on_device_removed(self, devpath: str):
+        with self._jobs_lock:
+            job = self._active_jobs.get(devpath)
+        if job:
+            job.cancel()
+            pct = ""
+            self._progress.print(
+                f"[bold yellow][警告] SSD \"{job.display_name}\" が切断されました。転送を中断します。\n"
+                f"  再接続を待機中...[/bold yellow]"
+            )
+
+    def _on_progress(self, job_id: str, copied_bytes: int, current_file: str, total_bytes: int, phase: str):
+        if phase == "start":
+            self._progress.add_job(job_id, job_id.split("_")[0], total_bytes)
+        else:
+            self._progress.update(job_id, copied_bytes, current_file)
+
+    def _on_complete(self, job_id: str, summary: dict):
+        self._progress.complete(job_id, summary)
+
+    def _on_error(self, job_id: str, message: str):
+        self._progress.error(job_id, message)
+
+    def _sequential_worker(self):
+        while not self._shutdown.is_set():
+            try:
+                job: TransferJob = self._job_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            job.start()
+            job.join()
+            self._job_queue.task_done()
+
+    def _run_parallel_job(self, job: TransferJob):
+        self._parallel_sem.acquire()
+        try:
+            job.start()
+            job.join()
+        finally:
+            self._parallel_sem.release()
+
+    def _make_dest_folder(self, display_name: str) -> Path:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return self._dest / ts / display_name
+
+    def _find_previous_transfer(self, uuid: str) -> Optional[Path]:
+        """Scan dest for a .transfer_complete marker matching the UUID."""
+        for marker_dir in self._dest.rglob(".transfer_complete"):
+            data = read_complete_marker(marker_dir.parent)
+            if data and data.get("uuid") == uuid:
+                return marker_dir.parent
+        return None
+
+    def _handle_sigint(self, signum, frame):
+        self._progress.print("\n[bold red][ssd-transfer] シャットダウン中...[/bold red]")
+        if self._monitor:
+            self._monitor.stop()
+        with self._jobs_lock:
+            jobs = list(self._active_jobs.values())
+        for job in jobs:
+            job.cancel()
+        for job in jobs:
+            job.join()
+        self._progress.stop()
+        self._shutdown.set()
+
+
+def main():
+    _setup_logging()
+    args = _parse_args()
+    App(args).run()
+
+
+if __name__ == "__main__":
+    main()

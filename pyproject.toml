@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ssd-transfer"
+version = "0.1.0"
+description = "CLI daemon that auto-detects external SSDs and copies files to a destination folder"
+requires-python = ">=3.10"
+dependencies = [
+    "pyudev>=0.24.1",
+    "psutil>=5.9.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+ssd-transfer = "ssd_transfer.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ssd_transfer*"]
