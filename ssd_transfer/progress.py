@@ -162,7 +162,7 @@ class ProgressDisplay:
                 self._progress.update(task_id, description=f"[red]error: {message[:40]}[/red]")
         self._console.print(f"[bold red][error] {message}[/bold red]")
 
-    def prompt_duplicate(self, label: str, uuid: str, prev_dest: Path, timeout: int = 30) -> str:
+    def prompt_duplicate(self, label: str, uuid: str, prev_dest: Path, timeout: int = 180) -> str:
         """Show duplicate SSD prompt. Returns 's', 'c', or 'r'. Stops/restarts Live."""
         with self._lock:
             was_started = self._started
@@ -178,13 +178,13 @@ class ProgressDisplay:
         self._console.print(r"  \[s] Skip (do nothing)")
         self._console.print(r"  \[c] Copy to a new folder (no overwrite)")
         self._console.print(r"  \[r] Overwrite copy (re-copy all files)")
-        self._console.print(f"  Auto-selecting \\[s] in {timeout}s if no input.")
+        self._console.print(f"  Auto-selecting \\[c] in {timeout}s if no input.")
 
-        choice = _timed_input("  Choice [s/c/r]: ", timeout=timeout, default="s")
+        choice = _timed_input("  Choice [s/c/r]: ", timeout=timeout, default="c")
         valid = {"s", "c", "r"}
         if choice.strip().lower() not in valid:
-            self._console.print(r"  → Auto-selected: \[s] skip")
-            choice = "s"
+            self._console.print(r"  → Auto-selected: \[c] copy to new folder")
+            choice = "c"
         else:
             choice = choice.strip().lower()
 
