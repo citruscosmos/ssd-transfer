@@ -49,6 +49,7 @@ class TransferJob:
 
         self.cancelled = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._sudo_synced_dirs: set[Path] = set()
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True, name=f"transfer-{self.job_id}")
@@ -232,41 +233,45 @@ class TransferJob:
         total_size: int,
         rel: Path,
     ) -> int:
-        """Copy a single file via 'sudo rsync' when the source is root-owned."""
-        logger.info(f"permission denied on {src_file}, retrying with sudo rsync")
-        tmp_file = dest_file.with_suffix(dest_file.suffix + ".tmp")
-        try:
+        """Copy via sudo, batching the entire parent directory on first PermissionError.
+
+        Calling sudo rsync per-file has ~100 ms overhead each. Rsyncing the whole
+        directory once and reusing the result for sibling files is orders of magnitude
+        faster when a directory contains many root-owned files (e.g. coredump/).
+        """
+        src_dir = src_file.parent
+        dest_dir = dest_file.parent
+
+        if src_dir not in self._sudo_synced_dirs:
+            logger.info(f"permission denied in {src_dir}, sudo rsync whole directory → {dest_dir}")
+            dest_dir.mkdir(parents=True, exist_ok=True)
             result = subprocess.run(
-                ["sudo", "rsync", "-a", "--", str(src_file), str(tmp_file)],
+                ["sudo", "rsync", "-a", "--", f"{src_dir}/", f"{dest_dir}/"],
                 capture_output=True,
                 text=True,
             )
             if result.returncode != 0:
-                raise OSError(f"sudo rsync failed: {result.stderr.strip()}")
-
-            # Hand off ownership to the current process user (file was created by sudo)
-            subprocess.run(
-                ["sudo", "chown", f"{os.getuid()}:{os.getgid()}", str(tmp_file)],
-                capture_output=True,
-                check=True,
-            )
-
-            file_bytes = tmp_file.stat().st_size
-            if self.on_progress:
-                self.on_progress(
-                    job_id=self.job_id,
-                    copied_bytes=copied_so_far + file_bytes,
-                    current_file=str(rel),
-                    total_bytes=total_size,
-                    phase="copy",
+                raise OSError(f"sudo rsync failed for {src_dir}: {result.stderr.strip()}")
+            try:
+                subprocess.run(
+                    ["sudo", "chown", "-R", f"{os.getuid()}:{os.getgid()}", str(dest_dir)],
+                    capture_output=True,
+                    check=True,
                 )
+            except subprocess.CalledProcessError as exc:
+                logger.warning(f"chown -R failed for {dest_dir}: {exc.stderr.strip() if exc.stderr else exc}")
+            self._sudo_synced_dirs.add(src_dir)
 
-            os.rename(tmp_file, dest_file)
-            return file_bytes
-        except (TransferCancelledError, BaseException):
-            if tmp_file.exists():
-                tmp_file.unlink(missing_ok=True)
-            raise
+        file_bytes = dest_file.stat().st_size if dest_file.exists() else 0
+        if self.on_progress:
+            self.on_progress(
+                job_id=self.job_id,
+                copied_bytes=copied_so_far + file_bytes,
+                current_file=str(rel),
+                total_bytes=total_size,
+                phase="copy",
+            )
+        return file_bytes
 
     def _scan_files(self):
         """Yield files matching the active filters (generator)."""
