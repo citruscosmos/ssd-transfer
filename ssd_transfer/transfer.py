@@ -244,8 +244,12 @@ class TransferJob:
             if result.returncode != 0:
                 raise OSError(f"sudo rsync failed: {result.stderr.strip()}")
 
-            # Hand off ownership to the current process user
-            os.chown(tmp_file, os.getuid(), os.getgid())
+            # Hand off ownership to the current process user (file was created by sudo)
+            subprocess.run(
+                ["sudo", "chown", f"{os.getuid()}:{os.getgid()}", str(tmp_file)],
+                capture_output=True,
+                check=True,
+            )
 
             file_bytes = tmp_file.stat().st_size
             if self.on_progress:
