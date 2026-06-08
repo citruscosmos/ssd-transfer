@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import logging
 import os
 import queue
@@ -61,6 +62,12 @@ def _parse_args() -> argparse.Namespace:
         help="copy only from these directories (e.g. --filter-dir DCIM Pictures)",
     )
     parser.add_argument(
+        "--filter-label",
+        nargs="+",
+        metavar="LABEL",
+        help="transfer only from SSDs whose label matches (glob patterns ok, e.g. --filter-label CAMERA* SSD1)",
+    )
+    parser.add_argument(
         "--max-concurrent",
         type=int,
         default=2,
@@ -79,6 +86,7 @@ class App:
             "ext": {e.lower() for e in args.filter_ext} if args.filter_ext else None,
             "dir": set(args.filter_dir) if args.filter_dir else None,
         }
+        self._label_patterns: list[str] = args.filter_label or []
 
         self._progress = ProgressDisplay(self._mode)
         self._active_jobs: dict[str, TransferJob] = {}
@@ -160,6 +168,12 @@ class App:
             name=f"device-handler-{Path(devpath).name}",
         ).start()
 
+    def _label_matches(self, label: str) -> bool:
+        """Return True if label matches any of the configured patterns (or no filter set)."""
+        if not self._label_patterns:
+            return True
+        return any(fnmatch.fnmatch(label or "", pat) for pat in self._label_patterns)
+
     def _handle_device_added(
         self,
         devpath: str,
@@ -169,6 +183,12 @@ class App:
         display_name: str,
     ):
         if self._shutdown.is_set():
+            return
+
+        if not self._label_matches(display_name):
+            self._progress.print(
+                f"[ssd-transfer] Skipped (label filter): {display_name}"
+            )
             return
 
         # Check for previous transfer of same UUID

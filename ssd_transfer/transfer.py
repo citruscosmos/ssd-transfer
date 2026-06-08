@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import threading
 import time
 from datetime import datetime, timezone
@@ -185,7 +186,12 @@ class TransferJob:
         tmp_file = dest_file.with_suffix(dest_file.suffix + ".tmp")
         file_bytes = 0
         try:
-            with open(src_file, "rb") as fsrc, open(tmp_file, "wb") as fdst:
+            try:
+                fsrc_cm = open(src_file, "rb")
+            except PermissionError:
+                return self._copy_file_sudo(src_file, dest_file, copied_so_far, total_size, rel)
+
+            with fsrc_cm as fsrc, open(tmp_file, "wb") as fdst:
                 while True:
                     if self.cancelled.is_set():
                         raise TransferCancelledError()
@@ -218,12 +224,57 @@ class TransferJob:
 
         return file_bytes
 
+    def _copy_file_sudo(
+        self,
+        src_file: Path,
+        dest_file: Path,
+        copied_so_far: int,
+        total_size: int,
+        rel: Path,
+    ) -> int:
+        """Copy a single file via 'sudo rsync' when the source is root-owned."""
+        logger.info(f"permission denied on {src_file}, retrying with sudo rsync")
+        tmp_file = dest_file.with_suffix(dest_file.suffix + ".tmp")
+        try:
+            result = subprocess.run(
+                ["sudo", "rsync", "-a", "--", str(src_file), str(tmp_file)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise OSError(f"sudo rsync failed: {result.stderr.strip()}")
+
+            # Hand off ownership to the current process user
+            os.chown(tmp_file, os.getuid(), os.getgid())
+
+            file_bytes = tmp_file.stat().st_size
+            if self.on_progress:
+                self.on_progress(
+                    job_id=self.job_id,
+                    copied_bytes=copied_so_far + file_bytes,
+                    current_file=str(rel),
+                    total_bytes=total_size,
+                    phase="copy",
+                )
+
+            os.rename(tmp_file, dest_file)
+            return file_bytes
+        except (TransferCancelledError, BaseException):
+            if tmp_file.exists():
+                tmp_file.unlink(missing_ok=True)
+            raise
+
     def _scan_files(self):
         """Yield files matching the active filters (generator)."""
         ext_filter = self.filters.get("ext")  # set of lowercase extensions or None
         dir_filter = self.filters.get("dir")  # set of directory names or None
 
-        for src_file in self.src.rglob("*"):
+        try:
+            entries = list(self.src.rglob("*"))
+        except PermissionError:
+            entries = list(self._rglob_sudo(self.src))
+
+        for src_file in entries:
             if not src_file.is_file():
                 continue
             if src_file.is_symlink():
@@ -240,6 +291,20 @@ class TransferJob:
                     continue
 
             yield src_file
+
+    def _rglob_sudo(self, root: Path):
+        """List all files under root using sudo find (fallback for root-owned trees)."""
+        logger.info(f"permission denied listing {root}, retrying with sudo find")
+        result = subprocess.run(
+            ["sudo", "find", str(root), "-not", "-type", "d"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise PermissionError(f"sudo find failed: {result.stderr.strip()}")
+        for line in result.stdout.splitlines():
+            if line:
+                yield Path(line)
 
     def _check_disk_space(self, required_bytes: int):
         usage = shutil.disk_usage(self.dest)
