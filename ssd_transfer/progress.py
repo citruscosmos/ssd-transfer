@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections import deque
@@ -162,7 +163,14 @@ class ProgressDisplay:
                 self._progress.update(task_id, description=f"[red]error: {message[:40]}[/red]")
         self._console.print(f"[bold red][error] {message}[/bold red]")
 
-    def prompt_duplicate(self, label: str, uuid: str, prev_dest: Path, timeout: int = 180) -> str:
+    def prompt_duplicate(
+        self,
+        label: str,
+        uuid: str,
+        prev_dest: Path,
+        timeout: int = 180,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
         """Show duplicate SSD prompt. Returns 's', 'c', 'r', or 'o'. Stops/restarts Live."""
         with self._lock:
             was_started = self._started
@@ -181,10 +189,11 @@ class ProgressDisplay:
         self._console.print(r"  \[o] Overwrite copy (re-copy all files)")
         self._console.print(f"  Auto-selecting \\[c] in {timeout}s if no input.")
 
-        choice = _timed_input("  Choice [s/c/r/o]: ", timeout=timeout, default="c")
+        choice = _timed_input("  Choice [s/c/r/o]: ", timeout=timeout, default="c", cancel_event=cancel_event)
         valid = {"s", "c", "r", "o"}
         if choice.strip().lower() not in valid:
-            self._console.print(r"  → Auto-selected: \[c] copy to new folder")
+            if cancel_event is None or not cancel_event.is_set():
+                self._console.print(r"  → Auto-selected: \[c] copy to new folder")
             choice = "c"
         else:
             choice = choice.strip().lower()
@@ -200,14 +209,43 @@ class ProgressDisplay:
         self._console.print(message)
 
 
-def _timed_input(prompt: str, timeout: int, default: str) -> str:
-    """Read a line from stdin with a timeout. Returns default on timeout."""
+def _timed_input(
+    prompt: str, timeout: int, default: str, cancel_event: Optional[threading.Event] = None
+) -> str:
+    """Read a line from stdin with a timeout. Returns default on timeout or cancellation."""
     import sys
     import select
 
     print(prompt, end="", flush=True)
-    ready, _, _ = select.select([sys.stdin], [], [], timeout)
-    if ready:
-        return sys.stdin.readline().rstrip("\n")
-    print()  # newline after timeout
-    return default
+
+    watch_fds = [sys.stdin]
+    pipe_fds: Optional[tuple[int, int]] = None
+
+    if cancel_event is not None:
+        r_fd, w_fd = os.pipe()
+        pipe_fds = (r_fd, w_fd)
+        watch_fds.append(r_fd)
+
+        def _pipe_on_cancel() -> None:
+            cancel_event.wait()
+            try:
+                os.write(w_fd, b"\x00")
+            except OSError:
+                pass
+
+        threading.Thread(target=_pipe_on_cancel, daemon=True).start()
+
+    try:
+        ready, _, _ = select.select(watch_fds, [], [], timeout)
+        if sys.stdin in ready:
+            return sys.stdin.readline().rstrip("\n")
+        print()  # newline after timeout or cancellation
+        return default
+    finally:
+        if pipe_fds is not None:
+            r_fd, w_fd = pipe_fds
+            os.close(r_fd)
+            try:
+                os.close(w_fd)
+            except OSError:
+                pass

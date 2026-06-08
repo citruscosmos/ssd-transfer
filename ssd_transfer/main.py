@@ -94,6 +94,10 @@ class App:
         self._monitor: Optional[DeviceMonitor] = None
         self._shutdown = threading.Event()
 
+        # devpath -> cancel_event for devices currently showing a duplicate prompt
+        self._pending_prompts: dict[str, threading.Event] = {}
+        self._pending_prompts_lock = threading.Lock()
+
     def run(self):
         self._validate_dest()
         self._progress.start()
@@ -139,6 +143,31 @@ class App:
         label: str,
         display_name: str,
     ):
+        # Return immediately so the udev observer thread stays free to process
+        # remove/add events while a duplicate prompt is being shown.
+        if self._shutdown.is_set():
+            return
+        threading.Thread(
+            target=self._handle_device_added,
+            kwargs=dict(
+                devpath=devpath,
+                mount_point=mount_point,
+                uuid=uuid,
+                label=label,
+                display_name=display_name,
+            ),
+            daemon=True,
+            name=f"device-handler-{Path(devpath).name}",
+        ).start()
+
+    def _handle_device_added(
+        self,
+        devpath: str,
+        mount_point: Path,
+        uuid: str,
+        label: str,
+        display_name: str,
+    ):
         if self._shutdown.is_set():
             return
 
@@ -146,9 +175,28 @@ class App:
         existing_dest = self._find_previous_transfer(uuid) if uuid else None
 
         if existing_dest:
-            choice = self._progress.prompt_duplicate(
-                label=display_name, uuid=uuid, prev_dest=existing_dest
-            )
+            cancel_event = threading.Event()
+            with self._pending_prompts_lock:
+                self._pending_prompts[devpath] = cancel_event
+
+            try:
+                choice = self._progress.prompt_duplicate(
+                    label=display_name,
+                    uuid=uuid,
+                    prev_dest=existing_dest,
+                    cancel_event=cancel_event,
+                )
+            finally:
+                with self._pending_prompts_lock:
+                    if self._pending_prompts.get(devpath) is cancel_event:
+                        del self._pending_prompts[devpath]
+
+            if cancel_event.is_set():
+                self._progress.print(
+                    f"[bold yellow][ssd-transfer] Prompt cancelled: {display_name} was disconnected.[/bold yellow]"
+                )
+                return
+
             if choice == "s":
                 self._progress.print(f"[ssd-transfer] Skipped: {display_name}")
                 return
@@ -197,6 +245,12 @@ class App:
             ).start()
 
     def _on_device_removed(self, devpath: str):
+        # Cancel a pending duplicate prompt for this device (if any).
+        with self._pending_prompts_lock:
+            cancel_event = self._pending_prompts.get(devpath)
+        if cancel_event is not None:
+            cancel_event.set()
+
         with self._jobs_lock:
             job = self._active_jobs.get(devpath)
         if job:
